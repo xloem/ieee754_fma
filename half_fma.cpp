@@ -6,22 +6,13 @@
 
 using namespace half_float;
 
-float half2float(half const & h)
-{
-	return float(h);
-}
-
 template <typename T, typename V> T & bits_cast(V & value)
 {
 	return *(T*)&value;
 }
 template <typename T, typename V> constexpr T bits_cast(V const & value)
 {
-	union {
-		V v;
-		T t;
-	} unioned = {.v = value};
-	return unioned.t;
+	union { V v; T t; } unioned = {.v = value}; return unioned.t;
 }
 
 // simplifies further if a construct is used to look up types by bitwidth they'll contain.
@@ -71,9 +62,7 @@ struct IEEE754_data {
 
 using HALF = IEEE754_data<uint16_t, uint16_t, uint32_t, 5>;
 using SINGLE = IEEE754_data<float, uint32_t, uint64_t, 8>;
-struct uint128_t {
-	uint64_t hi, lo;
-};
+struct uint128_t { uint64_t hi, lo; };
 using DOUBLE = IEEE754_data<double, uint64_t, uint128_t, 11>;
 
 template <class Float, std::float_round_style R = std::round_to_nearest>
@@ -91,7 +80,6 @@ typename Float::UInt float_downcast(typename Float1::UInt bits1)
 	constexpr auto const BITS_DIFF = Float1::BITS - Float::BITS;
 	constexpr auto const BITS_M_DIFF = Float1::BITS_M - Float::BITS_M;
 	constexpr auto const EXP_BIAS_DIFF = Float1::EXP_ENCODING_BIAS - Float::EXP_ENCODING_BIAS;
-	//UInt1 bits1 = bits_cast<UInt1>(d);
 	typename Float::UInt sign = static_cast<typename Float::UInt>(bits1>>BITS_DIFF) & Float::BIT_SIGN;
 	bits1 &= Float1::MASK_ABS;
 	if (bits1 > Float1::INF)
@@ -102,13 +90,12 @@ typename Float::UInt float_downcast(typename Float1::UInt bits1)
 		return sign | Float::INF;
 	else if (bits1 >= (Float1::EXP_ENCODING_BIAS + Float::EXP_DECODED_MAX + 1) << Float1::POS_EXP)
 		// overflow -> infinity
-			// it's notable here that summation is used instead of condition, for handling positive and negative extrema together
+			// here float_half used summation to combine extrema further assuming exp/mantissa ordering
 		return	(R==std::round_toward_infinity) ? (sign+Float::INF-(sign>>Float::POS_SIGN)) :
 				(R==std::round_toward_neg_infinity) ? (sign+Float::INF-1+(sign>>Float::POS_SIGN)) :
 				(R==std::round_toward_zero) ? (sign|(Float::INF-1)) :
 				(sign|Float::INF);
 	else if (bits1 >= (Float::EXP_DECODED_MIN + Float1::EXP_ENCODING_BIAS) << Float1::POS_EXP)
-	//else if (bits1 >= (Float::EXP_BIAS_DIFF + 1) << Float1::POS_EXP)
 		// normal value
 		return float_round<Float,R>(
 			sign|(((bits1>>Float1::POS_EXP)-EXP_BIAS_DIFF)<<Float::POS_EXP)|((bits1>>BITS_M_DIFF)&Float::MASK_M), 
@@ -143,14 +130,12 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 		typename Float::UInt sign = (x^y) & Float::BIT_SIGN;
 		bool sub = ((sign^z)&Float::BIT_SIGN) != 0;
 		if(absx >= Float::INF || absy >= Float::INF || absz >= Float::INF)
-			return	//(absx>0x7C00 || absy>0x7C00 || absz>0x7C00) ? half(detail::binary, detail::signal(x, y, z)) :
-					(absx>Float::INF) ? (x|Float::BIT_M_MOSTSIG) :
+			return	(absx>Float::INF) ? (x|Float::BIT_M_MOSTSIG) :
 					(absy>Float::INF) ? (y|Float::BIT_M_MOSTSIG) :
 					(absz>Float::INF) ? (z|Float::BIT_M_MOSTSIG) :
-					(absx==Float::INF) ? /*half(detail::binary, */(!absy || (sub && absz==Float::INF)) ? Float::NAN_QUIET/*detail::invalid()*/ : (sign|Float::INF)/*)*/ :
-					(absy==Float::INF) ? /*half(detail::binary, */(!absx || (sub && absz==Float::INF)) ? Float::NAN_QUIET/*detail::invalid()*/ : (sign|Float::INF)/*)*/ : z;
+					(absx==Float::INF) ? (!absy || (sub && absz==Float::INF)) ? Float::NAN_QUIET : (sign|Float::INF) :
+					(absy==Float::INF) ? (!absx || (sub && absz==Float::INF)) ? Float::NAN_QUIET : (sign|Float::INF) : z;
 		if(!absx || !absy)
-			//return absz ? z : /*half(detail::binary, (half::round_style*/(R==std::round_toward_neg_infinity) ? (z|sign) : (z&sign)/*)*/;
 			return  (absz) ? (z) :
 					(R==std::round_toward_neg_infinity) ? (z|sign) :
 					(R==std::round_toward_infinity) ? (z&sign) :
@@ -182,10 +167,7 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 					sign = z & Float::BIT_SIGN;
 			}
 			int d = exp - expz;
-			// m and mz are both 24-bit
-			// the purpose of the |(..) is to ensure that half values with a little extra round upward?
-			// the effect may be slightly different than correct
-			//mz = (d<(Float::BITS_M*2+3)) ? ((mz>>d)|((mz&((typename Float::ULongInt{1}<<d)-1))!=0)) : 1;
+			// here i added sticky_bit as elsewhere for for float_round. i think half_float was planning to do this but didn't get to it
 			if (d < Float::BITS_M*2+3) {
 				sticky_bit = ((mz&((typename Float::ULongInt{1}<<d)-1))!=0);
 				mz >>= d;
@@ -193,58 +175,39 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 				sticky_bit = 1;
 				mz = 0;
 			}
-			//sticky_bit = (d<(Float::BITS_M*2+3)) ? ((mz&((typename Float::ULongInt{1}<<d)-1))!=0) : 1;
-			//mz >>= d; expz = exp;
-			expz = exp;
-			//m <<= d;
-			//exp = expz;
+			expz = exp; // unused, for clarity
 			if(sub)
 			{
 				m = m - mz;
 				if(!m)
-					return /*half(detail::binary, */typename Float::UInt{/*half::round_style*/R==std::round_toward_neg_infinity}<<Float::POS_SIGN/*)*/;
+					return typename Float::UInt{R==std::round_toward_neg_infinity}<<Float::POS_SIGN;
+				m -= sticky_bit;
 				for(; m<typename Float::UInt{1}<<(Float::BITS_M*2+3); m<<=1,--exp) ;
 			}
 			else
 			{
 				m += mz;
 				i = m >> (Float::BITS_M*2+4);
-				m = (m>>i) | (m&i); // this should probably be changed to put m&i in sticky bit.
+				m = (m>>i) | (m&i); // this should probably be changed to put m&i in sticky bit?
 				exp += i;
 			}
 		}
 		if(exp > Float::EXP_ENCODED_MAX)
-			//return half(detail::binary, detail::overflow<half::round_style>(sign));
+			// overflow
 			return	(R==std::round_toward_infinity) ? (sign+Float::INF-(sign>>Float::POS_SIGN)) :
 					(R==std::round_toward_neg_infinity) ? (sign+Float::INF-1+(sign>>Float::POS_SIGN)) :
 					(R==std::round_toward_zero) ? (sign|(Float::INF-1)) :
 					(sign|Float::INF);
 		else if(exp + Float::BITS_M < 0)
-		//	return half(detail::binary, detail::underflow<half::round_style>(sign));
+			// underflow
 			return	(R==std::round_toward_infinity) ? (sign+1-(sign>>Float::POS_SIGN)) :
 					(R==std::round_toward_neg_infinity) ? (sign+(sign>>Float::POS_SIGN)) :
 					sign;
-		//return half(detail::binary, detail::fixed2half<half::round_style,23,false,false,false>(m, exp-1, sign));
-		//std::float_round_style R = half::round_style;
+		// convert from BITS*2+3 to BITS
 		constexpr auto F = Float::BITS_M*2+3;
-		//bool S = false;
-		//bool N = false;
-		//bool I = false;
 		exp -= 1;
-		//int s = 0;
-			/*if(S)
-			{
-				uint32 msign = sign_mask(m);
-				m = (m^msign) - msign;
-				sign = msign & 0x8000;
-			}*/
-			//unsigned int value;
-			//int guard_bit;
-			//int sticky_bit;
-			/*if(N)
-				for(; m<(static_cast<uint32>(1)<<F) && exp; m<<=1,--exp) ;
-			else*/
-			if(exp >= 0) {
+		if(exp >= 0)
+			{ // indentation temporarily retained to ease change tracking
 				return float_round<Float,R>(
 					sign+(exp<<Float::POS_EXP)+(m>>(F-Float::BITS_M)),
 					(m>>(F-Float::BITS_M-1))&1,
@@ -252,9 +215,9 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 				);
 			} else if((unsigned int)exp + Float::BITS_M + (unsigned int)sizeof(m)*8 > F) {
 				// it seems this should just be an 'else'
-				// but i was running into the >> operator rolling
-				// around instead of shifting, so added the check around
-				// this. maybe the shift operand was getting modulod.
+				// but i was running into the >> operator rotating
+				// instead of shifting, so added the check around
+				// this. maybe the shift operand was getting modulo'd.
 				// cpu intel core i7-7500U
 				// g++ 9.4.1 20211121
 				// date 2023-11-21
@@ -266,15 +229,11 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 			} else {
 				return sign;
 			}
-			//return	(R==std::round_to_nearest) ? (value+(guard_bit&(sticky_bit|value))) :
-			//		(R==std::round_toward_infinity) ? (value+(~(value>>Float::POS_SIGN)&(guard_bit|sticky_bit))) :
-			//		(R==std::round_toward_neg_infinity) ? (value+((value>>Float::POS_SIGN)&(guard_bit|sticky_bit))) :
-			//		value;
 }
 
 int main() {
 	//srand(time(NULL));
-	srand(0);
+	srand(1);
 	half h1, h2, h3, h4, h5, d1fh, d5fh, f1h, i1h, d1ih, f5h, i5h, d5ih;
 	uint16_t i1, i2, i3, i4, i5, d1i, d5i;
 	float f2, f3, f4, f5;
@@ -320,9 +279,6 @@ int main() {
 			assert(std::isnan(i1h));
 			assert(std::isnan(i1hf));
 		} else {
-			//assert(bits_cast<uint16_t>(h1) == bits_cast<uint16_t>(f1h));
-			//assert(i1 == bits_cast<uint16_t>(h1));
-			//assert(i1 == bits_cast<uint16_t>(d1h));
 			assert(i5 == d5i);
 			assert(i1 == d1i);
 		}
