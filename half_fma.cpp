@@ -16,6 +16,16 @@ template <typename T, typename V> constexpr T bits_cast(V const & value)
 	union { V v; T t; } unioned = {.v = value}; return unioned.t;
 }
 
+enum float_round_style
+{
+	round_indeterminate = std::round_indeterminate,
+	round_ties_to_even = 0x1000,
+	round_ties_to_away = std::round_to_nearest,
+	round_toward_positive = std::round_toward_infinity,
+	round_toward_negative = std::round_toward_neg_infinity,
+	round_toward_zero = std::round_toward_zero
+};
+
 // simplifies further if a construct is used to look up types by bitwidth they'll contain.
 	// [don't know offhand how to quickly make e.g. a template that responds to a set of values within an integer range]
 template <typename Float_t, typename UInt_t, typename ULongInt_t, int BITS_EXP_i>
@@ -66,16 +76,17 @@ using SINGLE = IEEE754_data<float, uint32_t, uint64_t, 8>;
 struct uint128_t { uint64_t hi, lo; };
 using DOUBLE = IEEE754_data<double, uint64_t, uint128_t, 11>;
 
-template <class Float, std::float_round_style R = std::round_to_nearest>
+template <class Float, float_round_style R = round_ties_to_away>
 typename Float::UInt inline float_round(typename Float::UInt const & value, bool guard, bool sticky)
 {
-	return	(R==std::round_to_nearest) ? (value+(guard&(sticky|value))) :
-			(R==std::round_toward_infinity) ? (value+(~(value>>Float::POS_SIGN)&(guard|sticky))) :
-			(R==std::round_toward_neg_infinity) ? (value+((value>>Float::POS_SIGN)&(guard|sticky))) :
+	assert(R!=round_ties_to_even);
+	return	(R==round_ties_to_away) ? (value+(guard&(sticky|value))) :
+			(R==round_toward_positive) ? (value+(~(value>>Float::POS_SIGN)&(guard|sticky))) :
+			(R==round_toward_negative) ? (value+((value>>Float::POS_SIGN)&(guard|sticky))) :
 			value;
 }
 
-template <class Float1, class Float=HALF, std::float_round_style R = std::round_to_nearest>
+template <class Float1, class Float=HALF, float_round_style R = round_ties_to_away>
 typename Float::UInt float_downcast(typename Float1::UInt bits1)
 {
 	constexpr auto const BITS_DIFF = Float1::BITS - Float::BITS;
@@ -92,9 +103,9 @@ typename Float::UInt float_downcast(typename Float1::UInt bits1)
 	else if (bits1 >= (Float1::EXP_ENCODING_BIAS + Float::EXP_DECODED_MAX + 1) << Float1::POS_EXP)
 		// overflow -> infinity
 			// here float_half used summation to combine extrema further assuming exp/mantissa ordering
-		return	(R==std::round_toward_infinity) ? (sign+Float::INF-(sign>>Float::POS_SIGN)) :
-				(R==std::round_toward_neg_infinity) ? (sign+Float::INF-1+(sign>>Float::POS_SIGN)) :
-				(R==std::round_toward_zero) ? (sign|(Float::INF-1)) :
+		return	(R==round_toward_positive) ? (sign+Float::INF-(sign>>Float::POS_SIGN)) :
+				(R==round_toward_negative) ? (sign+Float::INF-1+(sign>>Float::POS_SIGN)) :
+				(R==round_toward_zero) ? (sign|(Float::INF-1)) :
 				(sign|Float::INF);
 	else if (bits1 >= (Float::EXP_DECODED_MIN + Float1::EXP_ENCODING_BIAS) << Float1::POS_EXP)
 		// normal value
@@ -115,15 +126,15 @@ typename Float::UInt float_downcast(typename Float1::UInt bits1)
 	}
 	else if (bits1 != 0)
 		// underflow
-		return	(R==std::round_toward_infinity) ? (sign+1-(sign>>(Float::BITS-1))) :
-				(R==std::round_toward_neg_infinity) ? (sign+(sign>>(Float::BITS-1))) :
+		return	(R==round_toward_positive) ? (sign+1-(sign>>(Float::BITS-1))) :
+				(R==round_toward_negative) ? (sign+(sign>>(Float::BITS-1))) :
 				sign;
 	else
 		// signed zero
 		return sign;
 }
 
-template <typename Float, std::float_round_style R = std::round_to_nearest>
+template <typename Float, float_round_style R = round_ties_to_away>
 typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, typename Float::UInt z)
 {
 		typename Float::UInt absx = x & Float::MASK_ABS, absy = y & Float::MASK_ABS, absz = z & Float::MASK_ABS;
@@ -140,7 +151,7 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 			// i consulted the standard for this and the failure was a quirk of testing; i've reverted to correct original code.
 			// can check by making truth table from ieee754 2019 6.3 P3
 			return  (absz) ? (z) :
-					(R==std::round_toward_neg_infinity) ? (z|sign) :
+					(R==round_toward_negative) ? (z|sign) :
 					(z&sign);
 					
 		// these loops magnify subnormals to be normals with negative exps
@@ -183,28 +194,30 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 			{
 				m = m - mz;
 				if(!m)
-					return typename Float::UInt{R==std::round_toward_neg_infinity}<<Float::POS_SIGN;
+					return typename Float::UInt{R==round_toward_negative}<<Float::POS_SIGN;
 				m -= sticky_bit;
 				for(; m<typename Float::UInt{1}<<(Float::BITS_M*2+3); m<<=1,--exp) ;
 			}
 			else
 			{
+				// comment out m&i to find rounding errors so as to ensure it is correct
+				// usually rounding goes through the sticky bit, maybe that is unneeded here
 				m += mz;
 				i = m >> (Float::BITS_M*2+4);
-				m = (m>>i) | (m&i); // this should probably be changed to put m&i in sticky bit?
+				m = (m>>i) | (m&i);
 				exp += i;
 			}
 		}
 		if(exp > Float::EXP_ENCODED_MAX)
 			// overflow
-			return	(R==std::round_toward_infinity) ? (sign+Float::INF-(sign>>Float::POS_SIGN)) :
-					(R==std::round_toward_neg_infinity) ? (sign+Float::INF-1+(sign>>Float::POS_SIGN)) :
-					(R==std::round_toward_zero) ? (sign|(Float::INF-1)) :
+			return	(R==round_toward_positive) ? (sign+Float::INF-(sign>>Float::POS_SIGN)) :
+					(R==round_toward_negative) ? (sign+Float::INF-1+(sign>>Float::POS_SIGN)) :
+					(R==round_toward_zero) ? (sign|(Float::INF-1)) :
 					(sign|Float::INF);
 		else if(exp + Float::BITS_M < 0)
 			// underflow
-			return	(R==std::round_toward_infinity) ? (sign+1-(sign>>Float::POS_SIGN)) :
-					(R==std::round_toward_neg_infinity) ? (sign+(sign>>Float::POS_SIGN)) :
+			return	(R==round_toward_positive) ? (sign+1-(sign>>Float::POS_SIGN)) :
+					(R==round_toward_negative) ? (sign+(sign>>Float::POS_SIGN)) :
 					sign;
 		// convert from BITS*2+3 to BITS
 		constexpr auto F = Float::BITS_M*2+3;
@@ -285,7 +298,7 @@ int main() {
 				std::cout << "x=" << x << std::endl;
 				std::cout << std::hex;
 				std::cout << "i2=0x" << i2 << " * i3=0x" << i3 << " + i4=0x" << i4 << std::endl;
-				std::cout << "i1=0x" << i5 << " ; d1i=0x" << d5i << std::endl;
+				std::cout << "i1=0x" << i1 << " ; d1i=0x" << d1i << std::endl;
 			}
 			if (float(d1) != bits_cast<float>(float_downcast<DOUBLE,SINGLE>(bits_cast<uint64_t>(d1)))) {
 				std::cout << "general rounding error" << std::endl;
