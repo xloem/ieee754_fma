@@ -1,8 +1,9 @@
 #include <half/half.hpp>
 #include <time.h>
 #include <stdlib.h>
-#include <cassert>
 #include <type_traits>
+#include <cassert>
+#include <iostream>
 
 using namespace half_float;
 
@@ -136,11 +137,13 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 					(absx==Float::INF) ? (!absy || (sub && absz==Float::INF)) ? Float::NAN_QUIET : (sign|Float::INF) :
 					(absy==Float::INF) ? (!absx || (sub && absz==Float::INF)) ? Float::NAN_QUIET : (sign|Float::INF) : z;
 		if(!absx || !absy)
+			// i consulted the standard for this and the failure was a quirk of testing; i've reverted to correct original code.
+			// can check by making truth table from ieee754 2019 6.3 P3
 			return  (absz) ? (z) :
 					(R==std::round_toward_neg_infinity) ? (z|sign) :
-					(R==std::round_toward_infinity) ? (z&sign) :
-					sign;
+					(z&sign);
 					
+		// these loops magnify subnormals to be normals with negative exps
 		for(; absx<Float::BIT_EXP_LEASTSIG; absx<<=1,--exp) ;
 		for(; absy<Float::BIT_EXP_LEASTSIG; absy<<=1,--exp) ;
 		int sticky_bit = 0;
@@ -167,7 +170,7 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 					sign = z & Float::BIT_SIGN;
 			}
 			int d = exp - expz;
-			// here i added sticky_bit as elsewhere for for float_round. i think half_float was planning to do this but didn't get to it
+			// here i added sticky_bit as elsewhere for float_round. i think half_float was planning to do this but didn't get to it
 			if (d < Float::BITS_M*2+3) {
 				sticky_bit = ((mz&((typename Float::ULongInt{1}<<d)-1))!=0);
 				mz >>= d;
@@ -206,34 +209,32 @@ typename Float::UInt float_fma(typename Float::UInt x, typename Float::UInt y, t
 		// convert from BITS*2+3 to BITS
 		constexpr auto F = Float::BITS_M*2+3;
 		exp -= 1;
-		if(exp >= 0)
-			{ // indentation temporarily retained to ease change tracking
-				return float_round<Float,R>(
-					sign+(exp<<Float::POS_EXP)+(m>>(F-Float::BITS_M)),
-					(m>>(F-Float::BITS_M-1))&1,
-					sticky_bit|((m&((Float::BIT_LEASTSIG<<(F-Float::BITS_M-1))-1))!=0)
-				);
-			} else if((unsigned int)exp + Float::BITS_M + (unsigned int)sizeof(m)*8 > F) {
-				// it seems this should just be an 'else'
-				// but i was running into the >> operator rotating
-				// instead of shifting, so added the check around
-				// this. maybe the shift operand was getting modulo'd.
-				// cpu intel core i7-7500U
-				// g++ 9.4.1 20211121
-				// date 2023-11-21
-				return float_round<Float,R>(
-					sign+(m>>(F-Float::BITS_M-exp)),
-					(m>>(F-Float::BITS_M-1-exp))&1,
-					sticky_bit|((m&((Float::BIT_LEASTSIG<<(F-Float::BITS_M-1-exp))-1))!=0)
-				);
-			} else {
-				return sign;
-			}
+		if(exp >= 0) {
+			return float_round<Float,R>(
+				sign+(exp<<Float::POS_EXP)+(m>>(F-Float::BITS_M)),
+				(m>>(F-Float::BITS_M-1))&1,
+				sticky_bit|((m&((Float::BIT_LEASTSIG<<(F-Float::BITS_M-1))-1))!=0)
+			);
+		} else if((unsigned int)exp + Float::BITS_M + (unsigned int)sizeof(m)*8 > F) {
+			// it seems this should just be an 'else'
+			// but i was running into the >> operator rotating
+			// instead of shifting, so added the check around
+			// this. maybe the shift operand was getting modulo'd.
+			// cpu intel core i7-7500U
+			// g++ 9.4.1 20211121
+			// date 2023-11-21
+			return float_round<Float,R>(
+				sign+(m>>(F-Float::BITS_M-exp)),
+				(m>>(F-Float::BITS_M-1-exp))&1,
+				sticky_bit|((m&((Float::BIT_LEASTSIG<<(F-Float::BITS_M-1-exp))-1))!=0)
+			);
+		} else {
+			return sign;
+		}
 }
 
 int main() {
-	//srand(time(NULL));
-	srand(1);
+	srand(2);
 	half h1, h2, h3, h4, h5, d1fh, d5fh, f1h, i1h, d1ih, f5h, i5h, d5ih;
 	uint16_t i1, i2, i3, i4, i5, d1i, d5i;
 	float f2, f3, f4, f5;
@@ -241,13 +242,7 @@ int main() {
 	float d1f, d5f, i1hf, i5hf, d1ihf, d1fhf, d5ihf, d5fhf;
 	for (int x = 0; ; x++)
 	{
-		//bits_cast<uint16_t>(h2) = rand();
-		//bits_cast<uint16_t>(h3) = rand();
-		//bits_cast<uint16_t>(h4) = rand();
-		//h1 = half_float::fma(h2, h3, h4);
-		//h1f = float(h1);
 		i2 = rand(); i3 = rand(); i4 = rand();
-		//if (x < 6) continue;
 		h2 = bits_cast<half>(i2); h3 = bits_cast<half>(i3); h4 = bits_cast<half>(i4);
 		f2 = float(h2); f3 = float(h3); f4 = float(h4);
 		d2 = double(h2); d3 = double(h3); d4 = double(h4);
@@ -257,10 +252,10 @@ int main() {
 		d5fhf = float(d5fh);
 		uint64_t d5_i = bits_cast<uint64_t>(d5);
 		d5i = float_downcast<DOUBLE,HALF>(d5_i);
-		i5 = float_fma<HALF>(i2, i3, bits_cast<uint64_t>(half(0.0f)));
+		uint16_t i0 = HALF::BIT_SIGN & (i2 ^ i3);
+		i5 = float_fma<HALF>(i2, i3, i0);
 		i5h = bits_cast<half>(i5);
 		i5hf = float(i5h);
-		//d5h = half(d5);
 		d5ih = bits_cast<half>(d5i);
 		d5ihf = float(d5ih);
 		d1 = d5 + d4;
@@ -272,15 +267,36 @@ int main() {
 		i1 = float_fma<HALF>(i2, i3, i4);
 		i1h = bits_cast<half>(i1);
 		i1hf = float(i1h);
-		//d1h = half(d1);
 		d1ih = bits_cast<half>(d1i);
 		d1ihf = float(d1ih);
 		if (std::isnan(float(d1ihf))) {
 			assert(std::isnan(i1h));
 			assert(std::isnan(i1hf));
 		} else {
+			if (i5 != d5i) {
+				std::cout << "mismatch between i5 and d5i" << std::endl;
+				std::cout << "x=" << x << std::endl;
+				std::cout << std::hex;
+				std::cout << "i2=0x" << i2 << " * i3=0x" << i3 << " + i0=0x" << i0 << std::endl;
+				std::cout << "i5=0x" << i5 << " ; d5i=0x" << d5i << std::endl;
+			}
+			if (i1 != d1i) {
+				std::cout << "mismatch between i1 and d1i" << std::endl;
+				std::cout << "x=" << x << std::endl;
+				std::cout << std::hex;
+				std::cout << "i2=0x" << i2 << " * i3=0x" << i3 << " + i4=0x" << i4 << std::endl;
+				std::cout << "i1=0x" << i5 << " ; d1i=0x" << d5i << std::endl;
+			}
+			if (float(d1) != bits_cast<float>(float_downcast<DOUBLE,SINGLE>(bits_cast<uint64_t>(d1)))) {
+				std::cout << "general rounding error" << std::endl;
+				std::cout << "x=" << x << std::endl;
+				assert(false&&"general rounding error");
+			}
 			assert(i5 == d5i);
 			assert(i1 == d1i);
+		}
+		if (x>0 && x%10000000 == 0) {
+			std::cout << x << " groups of random bits without mismatches" << std::endl;
 		}
 	}
 }
